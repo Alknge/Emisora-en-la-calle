@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Vive FM - Unidad Móvil</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Segoe UI', sans-serif; background: #0b1120; color: #fff; padding: 16px; display: flex; justify-content: center; }
+    .box { width: 100%; max-width: 400px; background: #111827; border: 2px solid #334155; border-radius: 16px; padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+    .log { background: #0f172a; border: 1px solid #475569; padding: 10px; border-radius: 8px; font-size: 13px; color: #38bdf8; }
+    .prev { width: 100%; height: 160px; background: #000; border-radius: 8px; display: flex; align-items: center; justify-content: center; overflow: hidden; border: 1px solid #475569; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .btn { padding: 14px; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; color: white; }
+    .btn-blue { background: #0284c7; } .btn-gray { background: #334155; }
+    .btn-green { background: #10b981; } .btn-red { background: #ef4444; }
+    .btn:disabled { background: #475569; color: #94a3b8; }
+  </style>
+</head>
+<body>
+<div class="box">
+  <h3 style="text-align:center; color:#38bdf8;">📡 VIVE FM — UNIDAD MÓVIL</h3>
+  <div id="logMovil" class="log">Iniciando micrófono...</div>
+  <div class="prev">
+    <span id="badgeAud" style="color:#38bdf8; font-weight:bold;">🎙️ MODO SOLO AUDIO</span>
+    <video id="miVid" autoplay muted playsinline style="display:none;"></video>
+  </div>
+  <div class="grid">
+    <button id="bAud" class="btn btn-blue" onclick="setMedia(false)">🎙️ Solo Audio</button>
+    <button id="bVid" class="btn btn-gray" onclick="setMedia(true)">📹 Audio + Video</button>
+  </div>
+  <button id="btnCall" class="btn btn-green" onclick="conectarEstudio()" disabled>📞 LLAMAR AL ESTUDIO PC</button>
+  <button id="btnMute" class="btn btn-gray" onclick="mutear()" disabled>🎤 MICRÓFONO ABIERTO</button>
+</div>
+<audio id="audRet" autoplay></audio>
+
+<script>
+  // 👇 PEGA AQUÍ TU URL DE GOOGLE APPS SCRIPT TERMINADA EN /exec 👇
+  const URL_APPS_SCRIPT = "https://script.google.com/macros/s/AKfycbxzYX6O48RzSEnNjkAI0Ez8UtbHyO_HRrFJ8aYqt7INjXtCNThRgunUY1QnXAI228zm/exec";
+
+  let pc, stream, conVideo = false, mute = false, wakeLock = null, esperando = null;
+
+  function avisar(txt) { document.getElementById('logMovil').innerText = txt; }
+
+  window.onload = () => setMedia(false);
+
+  async function setMedia(vid) {
+    conVideo = vid;
+    document.getElementById('bAud').className = vid ? "btn btn-gray" : "btn btn-blue";
+    document.getElementById('bVid').className = vid ? "btn btn-blue" : "btn btn-gray";
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: vid ? { facingMode: "environment", width: 640 } : false });
+      const v = document.getElementById('miVid');
+      v.style.display = vid ? "block" : "none";
+      document.getElementById('badgeAud').style.display = vid ? "none" : "block";
+      if (vid) v.srcObject = stream;
+      document.getElementById('btnCall').disabled = false;
+      avisar("✅ Micrófono listo. Presiona LLAMAR AL ESTUDIO PC.");
+    } catch (e) {
+      avisar("❌ Error: Abre en Chrome mediante enlace HTTPS y permite el micrófono.");
+    }
+  }
+
+  async function conectarEstudio() {
+    if (!URL_APPS_SCRIPT.startsWith("http")) {
+      alert("❌ Pega tu URL de Apps Script en el código fuente primero.");
+      return;
+    }
+    const btn = document.getElementById('btnCall');
+    if (pc) {
+      pc.close(); pc = null;
+      if (esperando) clearInterval(esperando);
+      if (wakeLock) { wakeLock.release(); wakeLock = null; }
+      btn.className = "btn btn-green"; btn.innerText = "📞 LLAMAR AL ESTUDIO PC";
+      document.getElementById('btnMute').disabled = true;
+      avisar("Llamada finalizada.");
+      return;
+    }
+
+    if ('wakeLock' in navigator) { try { wakeLock = await navigator.wakeLock.request('screen'); } catch(e){} }
+    btn.disabled = true;
+    avisar("⏳ Enviando señal a Google Apps Script...");
+
+    pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:://google.com' }] });
+    stream.getTracks().forEach(t => pc.addTrack(t, stream));
+    pc.ontrack = (e) => { document.getElementById('audRet').srcObject = e.streams; };
+
+    const oferta = await pc.createOffer();
+    await pc.setLocalDescription(oferta);
+
+    await new Promise(resolve => {
+      if (pc.iceGatheringState === 'complete') resolve();
+      else pc.onicegatheringstatechange = () => { if (pc.iceGatheringState === 'complete') resolve(); };
+    });
+
+    await fetch(URL_APPS_SCRIPT + "?accion=guardar_oferta&data=" + encodeURIComponent(JSON.stringify(pc.localDescription)));
+    avisar("📡 Señal enviada. Esperando que la PC del estudio responda...");
+
+    esperando = setInterval(async () => {
+      const r = await fetch(URL_APPS_SCRIPT + "?accion=leer_respuesta");
+      const json = await r.json();
+      if (json.data && json.data.length > 10) {
+        clearInterval(esperando);
+        await pc.setRemoteDescription(new RTCSessionDescription(JSON.parse(json.data)));
+        btn.disabled = false;
+        btn.className = "btn btn-red";
+        btn.innerText = "🔴 CORTAR ENLACE CON ESTUDIO";
+        document.getElementById('btnMute').disabled = false;
+        avisar("🟢 ¡CONECTADO EN VIVO CON EL ESTUDIO!");
+      }
+    }, 2500);
+  }
+
+  function mutear() {
+    mute = !mute;
+    stream.getAudioTracks().forEach(t => t.enabled = !mute);
+    document.getElementById('btnMute').innerText = mute ? "🔇 MICRÓFONO MUTEADO" : "🎤 MICRÓFONO ABIERTO";
+    avisar(mute ? "🔇 Micrófono silenciado" : "🟢 Transmitiendo en vivo");
+  }
+</script>
+</body>
+</html>
